@@ -29,3 +29,4 @@ for _backend in sys.modules["external"].backend:
         from .kgcn import KGCN
         from .kgat import KGAT
         from .kguf import KGUF
+        from .rbrs import RBRS
