@@ -30,3 +30,5 @@ for _backend in sys.modules["external"].backend:
         from .kgat import KGAT
         from .kguf import KGUF
         from .rbrs import RBRS
+        from .rbrsint import RBRSINT
+        from .bprmfint import BPRMFINT
