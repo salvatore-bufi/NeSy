@@ -32,3 +32,4 @@ for _backend in sys.modules["external"].backend:
         from .rbrs import RBRS
         from .rbrsint import RBRSINT
         from .bprmfint import BPRMFINT
+        from .rbrsintgnn import RBRSINTGNN

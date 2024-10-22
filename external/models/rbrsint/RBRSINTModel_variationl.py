@@ -198,65 +198,7 @@ class RBRSINTModel(torch.nn.Module, ABC):
 
 
 
-    def forward_PROVA(self, inputs, **kwargs):
-        users, items = inputs
-        batch_size = users.shape[0]
 
-        # Get user embeddings and reshape for rules
-        gu = self.Gu.weight[users]
-
-        # Compute rules weight wrt user - rules weight
-        scores = torch.matmul(gu, self.Gr)
-        rules_weight = torch.softmax(scores, dim=1) # shape (batch_size, n_rules)
-
-
-        # Expanding Torch tensor, for broadcasting
-        # Compute user view enhanced through rules - u =  u  + rules_weight * rule
-        # gu_expanded[0] = user_0 (n_rules, embed_k), initially it is repeated equal
-        gu_expanded = gu.unsqueeze(1).expand(-1, self.n_rules, -1) # shape (n_user, n_rules, embed_k).
-
-        # gr_expanded contains Gr repeated for batch_size, i.e. gr_exp[0].shape = n_rules, embed_k that is equal to gr_exp[1] etc.
-        gr_expanded = self.Gr.T.unsqueeze(0).expand(batch_size, -1, -1) # [batch_size, n_rules, embed_k ]
-
-        rules_weight_expanded = rules_weight.unsqueeze(2) # [batch_size, n_rules, 1]
-
-        # Compute user-rule embedding:
-        gu_r = rules_weight * gr_expanded + gu_expanded  # (n_user, n_rules, embed_k).
-
-        # gi_expanded
-        gi = self.Gi.weight[items]
-        gi_expanded = gi.unsqueeze(1)
-
-        # MF scores ( for each rule)
-        scores = torch.sigmoid(torch.sum(gu_r * gi_expanded, dim=2)) # [batch_size, n_rules] | score[i] = score of user-item in batch for each rule
-        final_score = self.disjunction_rule(selector=1, selected=scores) # [batch_size]
-        return final_score
-
-
-    def predict_MAGO(self, start, stop, **kwargs):
-        # Prediction for all items for users in the range [start, stop)
-        gu = self.Gu.weight[start:stop].to(self.device)  # Shape: [num_users, n_rules * embed_k]
-        gu = gu.view(gu.shape[0], self.n_rules, self.embed_k)
-        selector = torch.ones(self.num_users, self.num_items)
-
-        gamma_i = self.Gi.weight.to(self.device)  # Shape: [num_items, embed_k]
-
-        # Compute scores for each user and item
-        scores = []
-        for r in range(self.n_rules):
-            gu_r = gu[:, r, :]  # [num_users, embed_k]
-            # Broadcasting over items
-            and_score = torch.matmul(gu_r, torch.transpose(gamma_i, 0, 1))  # [num_users, num_items]
-            scores.append(and_score.unsqueeze(0))  # [1, num_users, num_items]
-
-        # Combine scores using disjunction
-        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
-        expr = 1 - selector * and_scores_tensor + self.epsilon  # [n_rules, num_users, num_items]
-        log_expr = torch.log(expr)
-        sum_log_expr = torch.sum(log_expr, dim=0)  # Sum over rules
-        final_scores = 1 - (-1.0 / (-1.0 + sum_log_expr))  # [num_users, num_items]
-
-        return final_scores
 
 
 
