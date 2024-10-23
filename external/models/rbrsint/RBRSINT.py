@@ -21,28 +21,10 @@ class RBRSINT(RecMixin, BaseRecommenderModel):
     r"""
     Rule Based RS - The rules in this version are SHARED
 
-    Args:
-        factors: Number of latent factors
-        lr: Learning rate
-        l_w: Regularization coefficient for latent factors
-        n_rules: Number of rules for each user
-        eps: constant to avoid vanishing gradient in logical operation
-        l_rc: regularization factor for rule contrastive
+    C'è una matrice di "regole", da cui gli utenti tramite attention prelevano la regola.
+    Gr = (num_regol, dim_emb)
 
-
-    To include the recommendation model, add it to the config file adopting the following pattern:
-
-    .. code:: yaml
-
-      models:
-        RBRSINT:
-          meta:
-            save_recs: True
-          epochs: 10
-          batch_size: 512
-          factors: 10
-          lr: 0.001
-          l_w: 0.1
+    Avremo: per ogni utente nr embedding, ovvero ogni regola crea un embedding diverso !
     """
 
     @init_charger
