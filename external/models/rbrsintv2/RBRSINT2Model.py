@@ -5,7 +5,7 @@ import random
 import torch.nn.functional as F
 
 
-class RBRS2Model(torch.nn.Module, ABC):
+class RBRSINT2Model(torch.nn.Module, ABC):
     def __init__(self,
                  num_users: int,
                  num_items: int,
@@ -17,7 +17,7 @@ class RBRS2Model(torch.nn.Module, ABC):
                  nint:int,
                  epsilon: float,
                  l_rc: float,
-                 name="RBRS2",
+                 name="RBRSINT2",
                  **kwargs):
         super().__init__()
 
@@ -108,14 +108,14 @@ class RBRS2Model(torch.nn.Module, ABC):
         # Compute the score of each rule using MF
         and_scores = []
         for r in range(self.n_rules):
-            u_int_r = torch.softmax(gu @ self.Gr[:, r * self.nint: (r + 1) * self.nint]) @ self.Gr[:, r * self.nint: (r + 1) * self.nint].T
+            u_int_r = torch.softmax(gu @ self.Gr[:, r * self.nint: (r + 1) * self.nint], dim=1) @ self.Gr[:, r * self.nint: (r + 1) * self.nint].T
             gamma_u_r = gu + u_int_r
             score_and = torch.sum(gamma_u_r * gamma_i, -1)
             and_scores.append(score_and.unsqueeze(1))  # Shape: [batch_size, 1]
 
         # Concatenate and compute disjunction
         and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(and_scores, dim=1))  # Shape: [batch_size, n_rules]
-        xui = self.disjunction_rule(and_scores_tensor)  # Shape: [batch_size]
+        xui = self.disjunction_rule(1, and_scores_tensor)  # Shape: [batch_size]
 
         return xui, gu, gamma_i
 
@@ -123,14 +123,14 @@ class RBRS2Model(torch.nn.Module, ABC):
         # Prediction for all items for users in the range [start, stop)
         gu = self.Gu.weight[start:stop].to(self.device)  # Shape: [num_users, n_rules * embed_k]
 
-        selector = torch.ones(self.num_users, self.num_items)
-
+        # selector = torch.ones(self.num_users, self.num_items)
+        selector = 1
         gamma_i = self.Gi.weight.to(self.device)  # Shape: [num_items, embed_k]
 
         # Compute scores for each user and item
         scores = []
         for r in range(self.n_rules):
-            u_int_r = torch.softmax(gu @ self.Gr[:, r * self.nint: (r + 1) * self.nint]) @ self.Gr[:, r * self.nint: (                                                                                                                   r + 1) * self.nint].T
+            u_int_r = torch.softmax(gu @ self.Gr[:, r * self.nint: (r + 1) * self.nint], dim=1) @ self.Gr[:, r * self.nint: (                                                                                                                   r + 1) * self.nint].T
             gu_r = gu + u_int_r
             # Broadcasting over items
             and_score = torch.matmul(gu_r, torch.transpose(gamma_i, 0, 1))  # [num_users, num_items]
@@ -157,11 +157,8 @@ class RBRS2Model(torch.nn.Module, ABC):
         # Assume self.Gu.weight has shape (N, M * self.embed_k)
         rules = self.Gr.T
 
-        N = rules.size(0) # number of rules
-        M = self.n_rules  # Number of partitions, replace with your variable if different
-
         # Split the embeddings into M parts
-        embeddings = rules.view(N, M, self.embed_k)  # Shape: (N, M, embed_k)
+        embeddings = rules.view(self.nint, self.n_rules, self.embed_k)  # Shape: (N, M, embed_k)
 
         # Normalize embeddings
         norm_embeddings = F.normalize(embeddings, p=2, dim=2)  # Normalize along the embedding dimension
@@ -173,7 +170,7 @@ class RBRS2Model(torch.nn.Module, ABC):
 
         # Exclude self-similarities (diagonal elements) and duplicate pairs
         batch_size = embeddings.size(0)
-        idx = torch.triu_indices(M, M, offset=1)
+        idx = torch.triu_indices(self.n_rules, self.n_rules, offset=1)
         pairwise_similarities = similarities[:, idx[0], idx[1]]  # Shape: (N, num_pairs)
 
         # Compute the loss
@@ -241,11 +238,11 @@ class RBRS2Model(torch.nn.Module, ABC):
                 gamma_i_neg.norm(2).pow(2)
         ) / user.shape[0]
 
-        reg_rules_loss = self.l_w * (self.Gr.norm(2).pow(2)) / (self.nint * self.n_rules)
+        reg_rules_loss = self.l_w * (self.Gr.norm(2).pow(2)) / (self.nint )
 
 
         # ------------------ Rule Indipendence
-        loss += self.l_rc * self.dissimilarity_loss_matrix()
+        # loss += self.l_rc * self.dissimilarity_loss_matrix()
 
         loss += reg_loss
         loss += reg_rules_loss

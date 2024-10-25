@@ -44,7 +44,8 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
             ("_l_w", "l_w", "l_w", 0.1, float, None),
             ("_n_rules", "n_rules", "n_rules", 2, int, None),
             ("_eps", "eps", "eps", 1e-40, float, None),
-            ("_l_rc", "l_rc", "lrc", 0.005, float, None)
+            ("_l_rc", "l_rc", "lrc", 0.005, float, None),
+            ("_nint", "nint", "nint", 32, int, None)
         ]
         self.autoset_params()
 
@@ -56,7 +57,7 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
         self._sampler = cs.Sampler(self._data.i_train_dict, self._seed)
 
         self._model = RBRSINT2Model(num_users=self._num_users, num_items=self._num_items, learning_rate=self._learning_rate,
-                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed, n_rules=self._n_rules,
+                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed, n_rules=self._n_rules, nint=self._nint,
                                 epsilon=self._eps, l_rc=self._l_rc)
 
     @property

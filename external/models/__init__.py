@@ -29,8 +29,10 @@ for _backend in sys.modules["external"].backend:
         from .kgcn import KGCN
         from .kgat import KGAT
         from .kguf import KGUF
+        from .bigcf import BIGCF
         from .rbrs import RBRS
         from .rbrsint import RBRSINT
+        from .rbrsintv2 import RBRSINT2
         from .bprmfint import BPRMFINT
         from .rbrsintgnn import RBRSINTGNN
         from .rbrsgnnmultiple import RBRSGNNMULTIPLE
