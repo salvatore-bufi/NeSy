@@ -12,19 +12,39 @@ from elliot.dataset.samplers import custom_sampler as cs
 from elliot.utils.write import store_recommendation
 
 from elliot.recommender import BaseRecommenderModel
-from .RBRSINT2Model import RBRSINT2Model
+from .RBRSOPPOSITEModel import RBRSOPPOSITEModel
 from elliot.recommender.recommender_utils_mixin import RecMixin
 from elliot.recommender.base_recommender_model import init_charger
 
 
-class RBRSINT2(RecMixin, BaseRecommenderModel):
+class RBRSOPPOSITE(RecMixin, BaseRecommenderModel):
     r"""
-    Rule Based RS - The rules in this version are SHARED
+    Rule Based RS
 
-    C'è una matrice di "regole", da cui gli utenti tramite attention prelevano la regola.
-    Gr = (num_regol, dim_emb)
+    For further details, please refer to the `paper <https://arxiv.org/abs/1205.2618.pdf>`_
 
-    Avremo: per ogni utente nr embedding, ovvero ogni regola crea un embedding diverso !
+    Args:
+        factors: Number of latent factors
+        lr: Learning rate
+        l_w: Regularization coefficient for latent factors
+        n_rules: Number of rules for each user
+        eps: constant to avoid vanishing gradient in logical operation
+        l_rc: regularization factor for rule contrastive
+
+
+    To include the recommendation model, add it to the config file adopting the following pattern:
+
+    .. code:: yaml
+
+      models:
+        RBRSOPPOSITE:
+          meta:
+            save_recs: True
+          epochs: 10
+          batch_size: 512
+          factors: 10
+          lr: 0.001
+          l_w: 0.1
     """
 
     @init_charger
@@ -40,12 +60,9 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
 
         self._params_list = [
             ("_factors", "factors", "factors", 10, int, None),
-            ("_lr", "lr", "lr", 0.001, float, None),
+            ("_learning_rate", "lr", "lr", 0.001, float, None),
             ("_l_w", "l_w", "l_w", 0.1, float, None),
-            ("_n_rules", "n_rules", "n_rules", 2, int, None),
-            ("_eps", "eps", "eps", 1e-30, float, None),
-            ("_l_rc", "l_rc", "lrc", 0.005, float, None),
-            ("_nint", "nint", "nint", 32, int, None)
+            ("_eps", "eps", "eps", 1e-40, float, None)
         ]
         self.autoset_params()
 
@@ -56,13 +73,13 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
 
         self._sampler = cs.Sampler(self._data.i_train_dict, self._seed)
 
-        self._model = RBRSINT2Model(num_users=self._num_users, num_items=self._num_items, lr=self._lr,
-                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed, n_rules=self._n_rules, nint=self._nint,
-                                epsilon=self._eps, l_rc=self._l_rc)
+        self._model = RBRSOPPOSITEModel(num_users=self._num_users, num_items=self._num_items, learning_rate=self._learning_rate,
+                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed,
+                                epsilon=self._eps)
 
     @property
     def name(self):
-        return "RBRSINT2" \
+        return "RBRSOPPOSITE" \
             + f"_{self.get_base_params_shortcut()}" \
             + f"_{self.get_params_shortcut()}"
 

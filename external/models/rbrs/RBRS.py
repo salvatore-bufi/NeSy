@@ -64,7 +64,7 @@ class RBRS(RecMixin, BaseRecommenderModel):
             ("_l_w", "l_w", "l_w", 0.1, float, None),
             ("_n_rules", "n_rules", "n_rules", 2, int, None),
             ("_eps", "eps", "eps", 1e-40, float, None),
-            ("_l_rc", "l_rc", "lrc", 0.005, float, None)
+            ("_l_rc", "l_rc", "l_rc", 0.005, float, None)
         ]
         self.autoset_params()
 
@@ -106,8 +106,7 @@ class RBRS(RecMixin, BaseRecommenderModel):
         predictions_top_k_val = {}
         for index, offset in enumerate(range(0, self._num_users, self._batch_size)):
             offset_stop = min(offset + self._batch_size, self._num_users)
-            # predictions = self._model.predict(offset, offset_stop)
-            predictions = self._model.vectorized_predict(offset, offset_stop)
+            predictions = self._model.predict(offset, offset_stop)
             recs_val, recs_test = self.process_protocol(k, predictions, offset, offset_stop)
             predictions_top_k_val.update(recs_val)
             predictions_top_k_test.update(recs_test)

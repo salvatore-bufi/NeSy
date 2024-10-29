@@ -12,12 +12,12 @@ from elliot.dataset.samplers import custom_sampler as cs
 from elliot.utils.write import store_recommendation
 
 from elliot.recommender import BaseRecommenderModel
-from .RBRSINT2Model import RBRSINT2Model
+from .RBRSINTVARModel import RBRSINTVARModel
 from elliot.recommender.recommender_utils_mixin import RecMixin
 from elliot.recommender.base_recommender_model import init_charger
 
 
-class RBRSINT2(RecMixin, BaseRecommenderModel):
+class RBRSINTVAR(RecMixin, BaseRecommenderModel):
     r"""
     Rule Based RS - The rules in this version are SHARED
 
@@ -43,9 +43,8 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
             ("_lr", "lr", "lr", 0.001, float, None),
             ("_l_w", "l_w", "l_w", 0.1, float, None),
             ("_n_rules", "n_rules", "n_rules", 2, int, None),
-            ("_eps", "eps", "eps", 1e-30, float, None),
-            ("_l_rc", "l_rc", "lrc", 0.005, float, None),
-            ("_nint", "nint", "nint", 32, int, None)
+            ("_eps", "eps", "eps", 1e-40, float, None),
+            ("_l_kl", "l_kl", "l_kl", 0.01, float, None)
         ]
         self.autoset_params()
 
@@ -56,13 +55,13 @@ class RBRSINT2(RecMixin, BaseRecommenderModel):
 
         self._sampler = cs.Sampler(self._data.i_train_dict, self._seed)
 
-        self._model = RBRSINT2Model(num_users=self._num_users, num_items=self._num_items, lr=self._lr,
-                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed, n_rules=self._n_rules, nint=self._nint,
-                                epsilon=self._eps, l_rc=self._l_rc)
+        self._model = RBRSINTVARModel(num_users=self._num_users, num_items=self._num_items, lr=self._lr,
+                                embed_k=self._factors, l_w=self._l_w, random_seed=self._seed, n_rules=self._n_rules,
+                                epsilon=self._eps, l_kl=self._l_kl)
 
     @property
     def name(self):
-        return "RBRSINT2" \
+        return "RBRSINTVAR" \
             + f"_{self.get_base_params_shortcut()}" \
             + f"_{self.get_params_shortcut()}"
 

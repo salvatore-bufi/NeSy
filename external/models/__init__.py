@@ -33,6 +33,10 @@ for _backend in sys.modules["external"].backend:
         from .rbrs import RBRS
         from .rbrsint import RBRSINT
         from .rbrsintv2 import RBRSINT2
+        from .rbrsintvar import RBRSINTVAR
+        from .rbrsv3 import RBRSv3
+        from .rbrsopposite import RBRSOPPOSITE
+        from .rslogic import RSLOGIC
         from .bprmfint import BPRMFINT
         from .rbrsintgnn import RBRSINTGNN
         from .rbrsgnnmultiple import RBRSGNNMULTIPLE

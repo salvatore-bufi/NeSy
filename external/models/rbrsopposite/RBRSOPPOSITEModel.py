@@ -3,9 +3,10 @@ import torch
 import numpy as np
 import random
 import torch.nn.functional as F
+import torch.nn as nn
 
 
-class RBRSModel(torch.nn.Module, ABC):
+class RBRSOPPOSITEModel(torch.nn.Module, ABC):
     def __init__(self,
                  num_users: int,
                  num_items: int,
@@ -13,10 +14,8 @@ class RBRSModel(torch.nn.Module, ABC):
                  embed_k: int,
                  l_w: int,
                  random_seed: int,
-                 n_rules: int,
                  epsilon: float,
-                 l_rc: float,
-                 name="RBRS",
+                 name="RBRSOPPOSITE",
                  **kwargs):
         super().__init__()
 
@@ -35,16 +34,18 @@ class RBRSModel(torch.nn.Module, ABC):
         self.embed_k = embed_k  # Embedding dimension for each rule
         self.learning_rate = learning_rate
         self.l_w = l_w
-        self.n_rules = n_rules  # Number of conjunction rules
         self.epsilon = epsilon  # Small constant to prevent log(0)
-        self.l_rc = l_rc
 
         # Initialize embeddings for users and items
         # For users, we have n_rules different embeddings (one for each rule)
-        self.Gu = torch.nn.Embedding(self.num_users, self.n_rules * self.embed_k)
+        self.Gu = torch.nn.Embedding(self.num_users, self.embed_k)
         # torch.nn.init.trunc_normal_(self.Gu.weight, mean=0.5, std=1.0, a=0.0, b=1.0)
         torch.nn.init.xavier_uniform_(self.Gu.weight)
         self.Gu.to(self.device)
+
+        self.weight = nn.Parameter(
+            nn.init.normal(torch.empty((self.num_users, 1)), mean=0.0, std=1.0), requires_grad=True
+        )
 
         # Item embeddings
         self.Gi = torch.nn.Embedding(self.num_items, self.embed_k)
@@ -56,10 +57,10 @@ class RBRSModel(torch.nn.Module, ABC):
 
 
 
-    def disjunction_rule(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
+    def disjunction(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
         expr = torch.log(1 - selector * selected + epsilon)
         log_sum = torch.sum(expr, dim=1)
-        return 1 - (-1.0 / (-1.0 + log_sum))
+        return 1 - (-1 / (-1 + log_sum))
 
     def conjunction_rule(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
         """
@@ -85,45 +86,50 @@ class RBRSModel(torch.nn.Module, ABC):
         batch_size = users.shape[0]
 
         # Get user embeddings and reshape for rules
-        gu = self.Gu.weight[users]
-        gu = gu.view(batch_size, self.n_rules, self.embed_k)  # 3 dim: 1st_dim = user_id, 2nd_dim = rule_no, 3d_dim = embedding of user-rule
-        # Ensure embeddings are in [0,1]
+        gu = self.Gu(torch.tensor(users))
+        gu_opposite = -1 * gu
+
 
         # Get item embeddings
-        gamma_i = self.Gi.weight[items]  # Shape: [batch_size, embed_k]
+        gamma_i = self.Gi(torch.tensor(items)) # Shape: [batch_size, embed_k]
 
         # Compute the score of each rule using MF
         and_scores = []
-        for r in range(self.n_rules):
-            gamma_u_r = gu[:, r, :]  # User embedding for rule r
-            score_and = torch.sum(gamma_u_r * gamma_i, -1)
-            and_scores.append(score_and.unsqueeze(1))  # Shape: [batch_size, 1]
+
+        # Positive
+        a, b = torch.sigmoid(self.weight[users]), 1 - torch.sigmoid(self.weight[users])
+        score_and_one = a * torch.sum(gu * gamma_i, -1)
+        score_and_two = b * torch.sum(gu_opposite * gamma_i, -1)
+        and_scores.append(score_and_one.unsqueeze(1))
+        and_scores.append(score_and_two.unsqueeze(1))
 
         # Concatenate and compute disjunction
         and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(and_scores, dim=1))  # Shape: [batch_size, n_rules]
-        xui = self.disjunction_rule(1.0, and_scores_tensor)  # Shape: [batch_size]
+        xui = self.disjunction(1.0, and_scores_tensor)  # Shape: [batch_size]
 
         return xui, gu, gamma_i
 
 
     def predict(self, start, stop, **kwargs):
         # Prediction for all items for users in the range [start, stop)
-        gu = self.Gu.weight[start:stop].to(self.device)  # Shape: [num_users, n_rules * embed_k]
-        gu = gu.view(gu.shape[0], self.n_rules, self.embed_k)
+        gu = self.Gu.weight[start:stop].to(self.device)
+        gu_opposite = -1 * gu
         selector = 1.0
 
         gamma_i = self.Gi.weight.to(self.device)  # Shape: [num_items, embed_k]
 
-        # Compute scores for each user and item
-        scores = []
-        for r in range(self.n_rules):
-            gu_r = gu[:, r, :]  # [num_users, embed_k]
-            # Broadcasting over items
-            and_score = torch.matmul(gu_r, torch.transpose(gamma_i, 0, 1)) # [num_users, num_items]
-            scores.append(and_score.unsqueeze(0))  # [1, num_users, num_items]
+        and_scores = []
+        # Positive
+        a, b = torch.sigmoid(self.weight[start:stop]), 1 - torch.sigmoid(self.weight[start:stop])
+        score_and_one = a * torch.matmul(gu, torch.transpose(gamma_i, 0, 1))
+        score_and_two = b * torch.matmul(gu_opposite, torch.transpose(gamma_i, 0, 1))
+        and_scores.append(score_and_one.unsqueeze(0))
+        and_scores.append(score_and_two.unsqueeze(0))
+
+
 
         # Combine scores using disjunction
-        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
+        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(and_scores, dim=0))  # [n_rules, num_users, num_items]
         # 1 - selector * selected + epsilon, selector, can be a trainable array
         expr = 1 - selector * and_scores_tensor + self.epsilon  # [n_rules, num_users, num_items]
         log_expr = torch.log(expr)
@@ -132,83 +138,10 @@ class RBRSModel(torch.nn.Module, ABC):
 
         return final_scores
 
-    def dissimilarity_loss(self,  margin=0.5):
-        r0, r1 = torch.split(self.Gu.weight, [self.embed_k, self.embed_k], 1)
-        r0_normalized = F.normalize(r0, p=2, dim=1)
-        r1_normalized = F.normalize(r1, p=2, dim=1)
-        similarities = torch.sum(r0_normalized * r1_normalized, dim=1)
-        loss = F.relu(similarities + margin).mean()
-        return loss
-
-    def dissimilarity_loss_matrix(self, margin=0.5):
-        # Assume self.Gu.weight has shape (N, M * self.embed_k)
-        N = self.Gu.weight.size(0)
-        M = self.n_rules  # Number of partitions, replace with your variable if different
-
-        # Split the embeddings into M parts
-        embeddings = self.Gu.weight.view(N, M, self.embed_k)  # Shape: (N, M, embed_k)
-
-        # Normalize embeddings
-        norm_embeddings = F.normalize(embeddings, p=2, dim=2)  # Normalize along the embedding dimension
-
-        # Compute pairwise similarities between embeddings of different parts
-        # similarities: Tensor of shape (N, M, M), where similarities[n, i, j] = similarity between
-        # the i-th and j-th embeddings for the n-th sample
-        similarities = torch.bmm(norm_embeddings, norm_embeddings.transpose(1, 2))  # Shape: (N, M, M)
-
-        # Exclude self-similarities (diagonal elements) and duplicate pairs
-        batch_size = embeddings.size(0)
-        idx = torch.triu_indices(M, M, offset=1)
-        pairwise_similarities = similarities[:, idx[0], idx[1]]  # Shape: (N, num_pairs)
-
-        # Compute the loss
-        loss = F.relu(pairwise_similarities + margin).mean()  # Mean over all pairs and samples
-        return loss
-
-    def mutual_information_loss_vectorized(self, temperature=0.2):
-        """
-        Minimizes mutual information between embeddings using InfoNCE loss.
-        """
-        # Assume self.Gu.weight has shape (N, M * self.embed_k)
-        N = self.Gu.weight.size(0)
-        M = self.n_rules  # Number of partitions, replace with your variable if different
-        device = self.device
-
-        # Split and normalize embeddings
-        embeddings = self.Gu.weight.view(N, M, self.embed_k)  # Shape: (N, M, embed_k)
-        norm_embeddings = F.normalize(embeddings, p=2, dim=2)  # Normalize along the embedding dimension
-
-        loss = 0.0
-        count = 0
-
-        # Compute mutual information loss between each pair of embeddings
-        for i in range(M):
-            for j in range(M):
-                if i != j:
-                    # Compute similarities between embeddings[:, i, :] and embeddings[:, j, :]
-                    similarities = torch.matmul(norm_embeddings[:, i, :], norm_embeddings[:, j, :].T)  # Shape: (N, N)
-                    similarities /= temperature
-
-                    # Labels for InfoNCE (diagonal elements are positives)
-                    labels = torch.arange(N).to(device)
-
-                    # Cross-entropy loss
-                    loss += F.cross_entropy(similarities, labels)
-                    count += 1
-
-        # Average the loss over all pairs
-        loss = loss / count
-        return loss
-
-
 
     def train_step(self, batch):
         user, pos, neg = batch
 
-        # # Positive items
-        # xui_pos, gu_pos, gamma_i_pos = self.forward(inputs=(user[:,0], pos[:, 0]))
-        # # Negative items
-        # xui_neg, _, gamma_i_neg = self.forward(inputs=(user[:, 0], neg[:, 0]))
 
         # Positive items
         xui_pos, gu_pos, gamma_i_pos = self.forward(inputs=(user[:, 0], pos[:, 0]))
@@ -228,9 +161,6 @@ class RBRSModel(torch.nn.Module, ABC):
                 gamma_i_neg.norm(2).pow(2)
         ) / user.shape[0]
 
-
-        # ------------------ Rule Indipendence
-        loss += self.l_rc * self.dissimilarity_loss_matrix()
 
         loss += reg_loss
 

@@ -4,18 +4,18 @@ import numpy as np
 import random
 from abc import ABC
 
-class RBRSINTModel(torch.nn.Module, ABC):
+class RBRSINTVARModel(torch.nn.Module, ABC):
     def __init__(self,
                  num_users: int,
                  num_items: int,
-                 learning_rate: float,
+                 lr: float,
                  embed_k: int,
                  l_w: int,
                  random_seed: int,
                  n_rules: int,
                  epsilon: float,
-                 l_rc: float,
-                 name="RBRSINT",
+                 l_kl: float,
+                 name="RBRSINTVAR",
                  **kwargs):
         super().__init__()
 
@@ -31,11 +31,11 @@ class RBRSINTModel(torch.nn.Module, ABC):
         self.num_users = num_users
         self.num_items = num_items
         self.embed_k = embed_k
-        self.learning_rate = learning_rate
+        self.lr = lr
         self.l_w = l_w
         self.n_rules = n_rules
         self.epsilon = epsilon
-        self.l_rc = l_rc
+        self.l_kl = l_kl
 
         # Encoder parameters: Mean and log-variance of user embeddings
         self.Gu_mean = torch.nn.Embedding(self.num_users, self.embed_k)
@@ -52,7 +52,7 @@ class RBRSINTModel(torch.nn.Module, ABC):
         torch.nn.init.xavier_uniform_(self.Gi.weight)
         self.Gi.to(self.device)
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def reparameterize(self, mu, logvar):
         """

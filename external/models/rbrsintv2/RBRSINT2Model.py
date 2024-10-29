@@ -9,7 +9,7 @@ class RBRSINT2Model(torch.nn.Module, ABC):
     def __init__(self,
                  num_users: int,
                  num_items: int,
-                 learning_rate: float,
+                 lr: float,
                  embed_k: int,
                  l_w: int,
                  random_seed: int,
@@ -34,7 +34,7 @@ class RBRSINT2Model(torch.nn.Module, ABC):
         self.num_users = num_users
         self.num_items = num_items
         self.embed_k = embed_k  # Embedding dimension for each rule
-        self.learning_rate = learning_rate
+        self.lr = lr
         self.l_w = l_w
         self.n_rules = n_rules  # Number of conjunction rules
         self.epsilon = epsilon  # Small constant to prevent log(0)
@@ -59,7 +59,7 @@ class RBRSINT2Model(torch.nn.Module, ABC):
         self.Gr.to(self.device)
 
 
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
 
     def disjunction_rule(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
         '''
@@ -89,9 +89,9 @@ class RBRSINT2Model(torch.nn.Module, ABC):
         res = -1.0 / (-1.0 + sum_log_expr)
         return res
 
+
     def forward(self, inputs, **kwargs):
         users, items = inputs
-        batch_size = users.shape[0]
 
         # Get user embeddings and reshape for rules
         gu = self.Gu.weight[users]
@@ -114,7 +114,7 @@ class RBRSINT2Model(torch.nn.Module, ABC):
             and_scores.append(score_and.unsqueeze(1))  # Shape: [batch_size, 1]
 
         # Concatenate and compute disjunction
-        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(and_scores, dim=1))  # Shape: [batch_size, n_rules]
+        and_scores_tensor = torch.sigmoid(torch.cat(and_scores, dim=1))  # Shape: [batch_size, n_rules]
         xui = self.disjunction_rule(1, and_scores_tensor)  # Shape: [batch_size]
 
         return xui, gu, gamma_i
@@ -137,7 +137,7 @@ class RBRSINT2Model(torch.nn.Module, ABC):
             scores.append(and_score.unsqueeze(0))  # [1, num_users, num_items]
 
         # Combine scores using disjunction
-        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
+        and_scores_tensor = torch.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
         expr = 1 - selector * and_scores_tensor + self.epsilon  # [n_rules, num_users, num_items]
         log_expr = torch.log(expr)
         sum_log_expr = torch.sum(log_expr, dim=0)  # Sum over rules
@@ -145,72 +145,43 @@ class RBRSINT2Model(torch.nn.Module, ABC):
 
         return final_scores
 
-    def dissimilarity_loss(self, margin=0.5):
-        r0, r1 = torch.split(self.Gu.weight, [self.embed_k, self.embed_k], 1)
-        r0_normalized = F.normalize(r0, p=2, dim=1)
-        r1_normalized = F.normalize(r1, p=2, dim=1)
-        similarities = torch.sum(r0_normalized * r1_normalized, dim=1)
-        loss = F.relu(similarities + margin).mean()
-        return loss
 
-    def dissimilarity_loss_matrix(self, margin=0.5):
-        # Assume self.Gu.weight has shape (N, M * self.embed_k)
+
+
+    def mutual_information_loss(self, temperature=0.2):
         rules = self.Gr.T
+        embeddings = rules.view(self.nint, self.n_rules, self.embed_k)
+        norm_embeddings = F.normalize(embeddings, p=2, dim=2)
+        N, num_rules, M = embeddings.shape
+        # Reshape to [N * num_rules, M] for InfoNCE
+        reshaped_embeddings = embeddings.view(N * num_rules, M)  # [N*num_rules, M]
+        # Compute similarity matrix
+        similarity_matrix = torch.matmul(reshaped_embeddings, reshaped_embeddings.T)  # [N*num_rules, N*num_rules]
+        similarity_matrix /= temperature
 
-        # Split the embeddings into M parts
-        embeddings = rules.view(self.nint, self.n_rules, self.embed_k)  # Shape: (N, M, embed_k)
+        # Labels: for within-row, positives are embeddings of the same sample but different rules
+        # This is more complex, but one approach is to treat each embedding as a query and its positives as other embeddings from the same sample.
 
-        # Normalize embeddings
-        norm_embeddings = F.normalize(embeddings, p=2, dim=2)  # Normalize along the embedding dimension
+        # However, InfoNCE typically expects one positive per query. To adapt, we can use multiple positives or use a different loss like contrastive loss.
 
-        # Compute pairwise similarities between embeddings of different parts
-        # similarities: Tensor of shape (N, M, M), where similarities[n, i, j] = similarity between
-        # the i-th and j-th embeddings for the n-th sample
-        similarities = torch.bmm(norm_embeddings, norm_embeddings.transpose(1, 2))  # Shape: (N, M, M)
+        # For simplicity, we'll assume each embedding's positive is its corresponding embedding in another rule for the same sample.
+        # For example, for each sample, rule 0's positive could be rule 1's embedding, etc.
+        # This requires defining positive pairs appropriately.
 
-        # Exclude self-similarities (diagonal elements) and duplicate pairs
-        batch_size = embeddings.size(0)
-        idx = torch.triu_indices(self.n_rules, self.n_rules, offset=1)
-        pairwise_similarities = similarities[:, idx[0], idx[1]]  # Shape: (N, num_pairs)
+        # Alternatively, to keep it simple, treat each embedding as its own class in the combined loss.
+        # This approach encourages all embeddings to be distinct, but might not directly capture within-row relationships.
 
-        # Compute the loss
-        loss = F.relu(pairwise_similarities + margin).mean()  # Mean over all pairs and samples
+        # Here, we'll proceed with treating each embedding as its own class.
+        labels = torch.arange(N * num_rules).to(self.device)
+
+        # For numerical stability, subtract the max from each row
+        logits = similarity_matrix - torch.max(similarity_matrix, dim=1, keepdim=True).values
+
+        # Compute cross-entropy loss
+        loss = F.cross_entropy(logits, labels)
+
         return loss
 
-    def mutual_information_loss_vectorized(self, temperature=0.2):
-        """
-        Minimizes mutual information between embeddings using InfoNCE loss.
-        """
-        # Assume self.Gu.weight has shape (N, M * self.embed_k)
-        N = self.Gu.weight.size(0)
-        M = self.n_rules  # Number of partitions, replace with your variable if different
-        device = self.device
-
-        # Split and normalize embeddings
-        embeddings = self.Gu.weight.view(N, M, self.embed_k)  # Shape: (N, M, embed_k)
-        norm_embeddings = F.normalize(embeddings, p=2, dim=2)  # Normalize along the embedding dimension
-
-        loss = 0.0
-        count = 0
-
-        # Compute mutual information loss between each pair of embeddings
-        for i in range(M):
-            for j in range(M):
-                if i != j:
-                    # Compute similarities between embeddings[:, i, :] and embeddings[:, j, :]
-                    similarities = torch.matmul(norm_embeddings[:, i, :], norm_embeddings[:, j, :].T)  # Shape: (N, N)
-                    similarities /= temperature
-
-                    # Labels for InfoNCE (diagonal elements are positives)
-                    labels = torch.arange(N).to(device)
-
-                    # Cross-entropy loss
-                    loss += F.cross_entropy(similarities, labels)
-                    count += 1
-
-        # Average the loss over all pairs
-        loss = loss / count
-        return loss
 
     def train_step(self, batch):
         user, pos, neg = batch
@@ -232,20 +203,20 @@ class RBRSINT2Model(torch.nn.Module, ABC):
         loss = torch.nn.functional.softplus(-diff_scores).mean()
 
         # ----------------- Regularization Loss L2 -- Non va bene - sicuro da cambiare
-        reg_loss = self.l_w * (
+        reg_loss = self.l_w * (1/2) * (
                 gu_pos.norm(2).pow(2) +
                 gamma_i_pos.norm(2).pow(2) +
                 gamma_i_neg.norm(2).pow(2)
         ) / user.shape[0]
 
-        reg_rules_loss = self.l_w * (self.Gr.norm(2).pow(2)) / (self.nint )
-
-
-        # ------------------ Rule Indipendence
-        # loss += self.l_rc * self.dissimilarity_loss_matrix()
-
         loss += reg_loss
+
+        reg_rules_loss = self.l_w * (self.Gr.norm(2).pow(2)) / (self.nint )
         loss += reg_rules_loss
+        # ------------------ Rule Indipendence
+        loss += self.l_rc * self.mutual_information_loss()
+
+
 
         self.optimizer.zero_grad()
         loss.backward()

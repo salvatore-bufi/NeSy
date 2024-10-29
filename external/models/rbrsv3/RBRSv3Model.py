@@ -5,7 +5,7 @@ import random
 import torch.nn.functional as F
 
 
-class RBRSModel(torch.nn.Module, ABC):
+class RBRSv3Model(torch.nn.Module, ABC):
     def __init__(self,
                  num_users: int,
                  num_items: int,
@@ -16,7 +16,7 @@ class RBRSModel(torch.nn.Module, ABC):
                  n_rules: int,
                  epsilon: float,
                  l_rc: float,
-                 name="RBRS",
+                 name="RBRSv3",
                  **kwargs):
         super().__init__()
 
@@ -41,10 +41,12 @@ class RBRSModel(torch.nn.Module, ABC):
 
         # Initialize embeddings for users and items
         # For users, we have n_rules different embeddings (one for each rule)
-        self.Gu = torch.nn.Embedding(self.num_users, self.n_rules * self.embed_k)
+        self.Gu = torch.nn.Embedding(self.num_users, self.embed_k)
         # torch.nn.init.trunc_normal_(self.Gu.weight, mean=0.5, std=1.0, a=0.0, b=1.0)
         torch.nn.init.xavier_uniform_(self.Gu.weight)
         self.Gu.to(self.device)
+
+        self.rule_mlps = torch.nn.ModuleList([torch.nn.Linear(self.embed_k, self.embed_k) for _ in range(self.n_rules)])
 
         # Item embeddings
         self.Gi = torch.nn.Embedding(self.num_items, self.embed_k)
@@ -56,29 +58,12 @@ class RBRSModel(torch.nn.Module, ABC):
 
 
 
-    def disjunction_rule(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
+    def disjunction(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
         expr = torch.log(1 - selector * selected + epsilon)
         log_sum = torch.sum(expr, dim=1)
-        return 1 - (-1.0 / (-1.0 + log_sum))
-
-    def conjunction_rule(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
-        """
-        * This function performs a smooth AND-like operation on the tensors selector and selected. It multiplies the selector tensor by the complement of the selected tensor, then applies a logarithmic transformation to avoid numerical issues, sums these logs across dimensions, and returns a score between 0 and 1. The output represents the result of a smooth AND operation, with higher values indicating stronger conjunction (AND).
-        """
+        return 1 - (-1 / (-1 + log_sum))
 
 
-        # Compute the element-wise terms
-        expr = 1 - selector * (1 - selector) + epsilon  # epsilon prevents log(0)
-
-        # Take the logarithm of each term
-        log_expr = torch.log(expr)
-
-        # Sum over the embedding dimensions
-        sum_log_expr = torch.sum(log_expr, dim=1)
-
-        # Compute the final AND function value
-        res = -1.0 / (-1.0 + sum_log_expr)
-        return res
 
     def forward(self, inputs, **kwargs):
         users, items = inputs
@@ -86,44 +71,46 @@ class RBRSModel(torch.nn.Module, ABC):
 
         # Get user embeddings and reshape for rules
         gu = self.Gu.weight[users]
-        gu = gu.view(batch_size, self.n_rules, self.embed_k)  # 3 dim: 1st_dim = user_id, 2nd_dim = rule_no, 3d_dim = embedding of user-rule
+        gu = gu.unsqueeze(1)  # # Shape: [batch_size, 1, embed_k]
         # Ensure embeddings are in [0,1]
 
         # Get item embeddings
         gamma_i = self.Gi.weight[items]  # Shape: [batch_size, embed_k]
 
-        # Compute the score of each rule using MF
+        # Compute the score of each rule using MF Shape: [batch_size, n_rules, embed_k]
         and_scores = []
-        for r in range(self.n_rules):
-            gamma_u_r = gu[:, r, :]  # User embedding for rule r
+
+        for mlp in self.rule_mlps:
+            gamma_u_r = mlp(gu)
             score_and = torch.sum(gamma_u_r * gamma_i, -1)
             and_scores.append(score_and.unsqueeze(1))  # Shape: [batch_size, 1]
 
+
         # Concatenate and compute disjunction
         and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(and_scores, dim=1))  # Shape: [batch_size, n_rules]
-        xui = self.disjunction_rule(1.0, and_scores_tensor)  # Shape: [batch_size]
+        xui = self.disjunction(1.0, and_scores_tensor)  # Shape: [batch_size]
 
         return xui, gu, gamma_i
 
 
     def predict(self, start, stop, **kwargs):
         # Prediction for all items for users in the range [start, stop)
-        gu = self.Gu.weight[start:stop].to(self.device)  # Shape: [num_users, n_rules * embed_k]
-        gu = gu.view(gu.shape[0], self.n_rules, self.embed_k)
+        gu = self.Gu.weight[start:stop].to(self.device)  # Shape: [num_users, embed_k]
         selector = 1.0
 
         gamma_i = self.Gi.weight.to(self.device)  # Shape: [num_items, embed_k]
 
         # Compute scores for each user and item
         scores = []
-        for r in range(self.n_rules):
-            gu_r = gu[:, r, :]  # [num_users, embed_k]
-            # Broadcasting over items
-            and_score = torch.matmul(gu_r, torch.transpose(gamma_i, 0, 1)) # [num_users, num_items]
-            scores.append(and_score.unsqueeze(0))  # [1, num_users, num_items]
+
+        for mlp in self.rule_mlps:
+            gamma_u_r = mlp(gu)
+            score_and = torch.matmul(gamma_u_r, torch.transpose(gamma_i, 0, 1)) #
+            scores.append(score_and.unsqueeze(1))  # Shape: [batch_size, 1]
+
 
         # Combine scores using disjunction
-        and_scores_tensor = torch.nn.functional.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
+        and_scores_tensor = torch.sigmoid(torch.cat(scores, dim=0))  # [n_rules, num_users, num_items]
         # 1 - selector * selected + epsilon, selector, can be a trainable array
         expr = 1 - selector * and_scores_tensor + self.epsilon  # [n_rules, num_users, num_items]
         log_expr = torch.log(expr)
@@ -230,7 +217,7 @@ class RBRSModel(torch.nn.Module, ABC):
 
 
         # ------------------ Rule Indipendence
-        loss += self.l_rc * self.dissimilarity_loss_matrix()
+        # loss += self.l_rc * self.dissimilarity_loss_matrix()
 
         loss += reg_loss
 
