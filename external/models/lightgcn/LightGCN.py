@@ -62,7 +62,9 @@ class LightGCN(RecMixin, BaseRecommenderModel):
         self.autoset_params()
 
         row, col = data.sp_i_train.nonzero()
+
         col = [c + self._num_users for c in col]
+
         edge_index = np.array([row, col])
         edge_index = torch.tensor(edge_index, dtype=torch.int64)
         self.adj = SparseTensor(row=torch.cat([edge_index[0], edge_index[1]], dim=0),
