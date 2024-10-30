@@ -172,7 +172,7 @@ class RSLOGICModel(torch.nn.Module, ABC):
                                          gamma_i_pos.norm(2).pow(2) +
                                          gamma_i_neg.norm(2).pow(2)) / user.shape[0]
         loss += reg_loss
-
+        print()
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
