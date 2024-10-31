@@ -78,8 +78,8 @@ class LightGCNModel(torch.nn.Module, ABC):
 
         if evaluate:
             self.propagation_network.train()
-
-        all_embeddings = sum([all_embeddings[k] * self.alpha[k] for k in range(len(all_embeddings))])
+        all_embeddings = torch.mean(torch.stack(all_embeddings, 0), dim=0)
+        # all_embeddings = sum([all_embeddings[k] * self.alpha[k] for k in range(len(all_embeddings))])
         gu, gi = torch.split(all_embeddings, [self.num_users, self.num_items], 0)
 
         return gu, gi
@@ -94,18 +94,25 @@ class LightGCNModel(torch.nn.Module, ABC):
         return xui
 
     def predict(self, gu, gi, **kwargs):
-        return torch.matmul(gu.to(self.device), torch.transpose(gi.to(self.device), 0, 1))
+        return torch.sigmoid(torch.matmul(gu.to(self.device), torch.transpose(gi.to(self.device), 0, 1)))
+        # return torch.matmul(gu.to(self.device), torch.transpose(gi.to(self.device), 0, 1))
 
     def train_step(self, batch):
         gu, gi = self.propagate_embeddings()
         user, pos, neg = batch
+        # xu_pos = self.forward(inputs=(gu[user[:, 0]], gi[pos[:, 0]]))
+        # xu_neg = self.forward(inputs=(gu[user[:, 0]], gi[neg[:, 0]]))
+        # difference = torch.clamp(xu_pos - xu_neg, -80.0, 1e8)
+        # loss = torch.sum(self.softplus(-difference))
+        # reg_loss = self.l_w * (torch.norm(self.Gu, 2) +
+        #                        torch.norm(self.Gi, 2))
+        # loss += reg_loss
         xu_pos = self.forward(inputs=(gu[user[:, 0]], gi[pos[:, 0]]))
         xu_neg = self.forward(inputs=(gu[user[:, 0]], gi[neg[:, 0]]))
-        difference = torch.clamp(xu_pos - xu_neg, -80.0, 1e8)
-        loss = torch.sum(self.softplus(-difference))
-        reg_loss = self.l_w * (torch.norm(self.Gu, 2) +
-                               torch.norm(self.Gi, 2))
-        loss += reg_loss
+        loss = torch.mean(torch.nn.functional.softplus(xu_neg - xu_pos))
+        reg_loss = self.l_w * (1 / 2) * (self.Gu.weight[user[:, 0]].norm(2).pow(2) +
+                                         self.Gi.weight[pos[:, 0]].norm(2).pow(2) +
+                                         self.Gi.weight[neg[:, 0]].norm(2).pow(2)) / float(batch[0].shape[0])
 
         self.optimizer.zero_grad()
         loss.backward()

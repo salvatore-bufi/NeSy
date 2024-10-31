@@ -92,9 +92,9 @@ class RSLOGICModel(torch.nn.Module, ABC):
         mask = ~torch.isin(code_int, code_batch)
 
         # Apply the mask to filter out unwanted pairs
-        self.ui_filtered = self.ui[:, mask]
+        ui_filtered = self.ui[:, mask]
 
-        return self.ui_filtered
+        return ui_filtered
 
     def extract_int_from_user_history(self, user: np.array, ui: torch.Tensor) -> torch.Tensor:
 
@@ -114,20 +114,20 @@ class RSLOGICModel(torch.nn.Module, ABC):
 
     def interaction_int(self, user, item):
         ui_vector = torch.cat((user, item), dim=1)
-        ui_vector = F.relu(self.int_layer1(ui_vector))
+        ui_vector = F.leaky_relu(self.int_layer1(ui_vector))
         ui_vector = self.int_layer2(ui_vector)
         return ui_vector
 
     def interaction_int_history(self, user: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
         ui_vector = torch.cat((user.view(1, -1).expand(items.size(0), -1), items), dim=1)
-        ui_vector = F.relu(self.int_layer1(ui_vector))
+        ui_vector = F.leaky_relu(self.int_layer1(ui_vector))
         ui_vector = self.int_layer2(ui_vector)
         return ui_vector
 
     def interaction_int_all_items(self, user: torch.Tensor) -> torch.tensor:
         items = self.Gi.weight
         ui_vector = torch.cat((user.view(1, -1).expand(items.size(0), -1), items), dim=1)
-        ui_vector = F.relu(self.int_layer1(ui_vector))
+        ui_vector = F.leaky_relu(self.int_layer1(ui_vector))
         ui_vector = self.int_layer2(ui_vector)
         return ui_vector
 
@@ -150,11 +150,11 @@ class RSLOGICModel(torch.nn.Module, ABC):
 
         scores = []
         for u in users:
-            gu_star = self.extract_int_from_user_history(users, self.ui)
+            gu_star = self.extract_int_from_user_history([u], self.ui)
             Gi_u = self.interaction_int_all_items(self.Gu.weight[u])
             u_score = torch.matmul(gu_star, torch.transpose(Gi_u, 0, 1))
             scores.append(u_score)
-        torch.cat(scores, 0)
+        scores = torch.cat(scores, 0)
         return scores
 
 
@@ -172,7 +172,6 @@ class RSLOGICModel(torch.nn.Module, ABC):
                                          gamma_i_pos.norm(2).pow(2) +
                                          gamma_i_neg.norm(2).pow(2)) / user.shape[0]
         loss += reg_loss
-        print()
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

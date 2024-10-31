@@ -68,7 +68,7 @@ class RBRSModel(torch.nn.Module, ABC):
 
 
         # Compute the element-wise terms
-        expr = 1 - selector * (1 - selector) + epsilon  # epsilon prevents log(0)
+        expr = 1 - selector * (1 - selected) + epsilon  # epsilon prevents log(0)
 
         # Take the logarithm of each term
         log_expr = torch.log(expr)

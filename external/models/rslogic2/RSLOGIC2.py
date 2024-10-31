@@ -1,85 +1,97 @@
-from tqdm import tqdm
-import numpy as np
+"""
+Module description:
+
+"""
+
+__version__ = '0.3.1'
+__author__ = 'Vito Walter Anelli, Claudio Pomo, Daniele Malitesta'
+__email__ = 'vitowalter.anelli@poliba.it, claudio.pomo@poliba.it, daniele.malitesta@poliba.it'
+
 import torch
 import os
+from tqdm import tqdm
 import math
+import numpy as np
 
-from elliot.utils.write import store_recommendation
 from elliot.dataset.samplers import custom_sampler as cs
+from elliot.utils.write import store_recommendation
+
 from elliot.recommender import BaseRecommenderModel
-from elliot.recommender.base_recommender_model import init_charger
+from .RSLOGIC2Model import RSLOGIC2Model
 from elliot.recommender.recommender_utils_mixin import RecMixin
-from .RSLOGICModel import RSLOGICModel
-
-from torch_sparse import SparseTensor
+from elliot.recommender.base_recommender_model import init_charger
 
 
-class RSLOGIC(RecMixin, BaseRecommenderModel):
+class RSLOGIC2(RecMixin, BaseRecommenderModel):
     r"""
-    RSLOGIC: Simplifying and Powering Graph Convolution Network for Recommendation
+    Batch Bayesian Personalized Ranking with Matrix Factorization
 
-    For further details, please refer to the `paper <https://dl.acm.org/doi/10.1145/3397271.3401063>`_
+    For further details, please refer to the `paper <https://arxiv.org/abs/1205.2618.pdf>`_
 
     Args:
-        lr: Learning rate
-        epochs: Number of epochs
         factors: Number of latent factors
-        batch_size: Batch size
-        l_w: Regularization coefficient
-        n_layers: Number of stacked propagation layers
+        lr: Learning rate
+        l_w: Regularization coefficient for latent factors
 
     To include the recommendation model, add it to the config file adopting the following pattern:
 
     .. code:: yaml
 
       models:
-        RSLOGIC:
+        RSLOGIC2:
           meta:
             save_recs: True
-          lr: 0.0005
-          epochs: 50
+          epochs: 10
           batch_size: 512
-          factors: 64
-          batch_size: 256
+          factors: 10
+          lr: 0.001
           l_w: 0.1
-          n_layers: 2
     """
+
     @init_charger
     def __init__(self, data, config, params, *args, **kwargs):
+        """
+        Create a BPR-MF instance.
+        (see https://arxiv.org/pdf/1205.2618 for details about the algorithm design choices).
 
-        self._sampler = cs.Sampler(self._data.i_train_dict)
-        if self._batch_size < 1:
-            self._batch_size = self._num_users
-
-        ######################################
+        Args:
+            data: data loader object
+            params: model parameters {embed_k: embedding size,
+                                      [l_w]: regularization,
+                                      lr: learning rate}
+        """
 
         self._params_list = [
-            ("_learning_rate", "lr", "lr", 0.0005, float, None),
-            ("_factors", "factors", "factors", 64, int, None),
-            ("_l_w", "l_w", "l_w", 0.01, float, None),
-            ("_n_layers", "n_layers", "n_layers", 1, int, None)
+            ("_factors", "factors", "factors", 10, int, None),
+            ("_learning_rate", "lr", "lr", 0.001, float, None),
+            ("_l_w", "l_w", "l_w", 0.1, float, None)
         ]
         self.autoset_params()
+
+        if self._batch_size < 1:
+            self._batch_size = self._data.transactions
+
+        self._ratings = self._data.train_dict
+
+        self._sampler = cs.Sampler(self._data.i_train_dict, self._seed)
 
         row, col = data.sp_i_train.nonzero()
         edge_index = np.array([row, col])
         ui = torch.tensor(edge_index, dtype=torch.int64, requires_grad=False)
 
-        self._model = RSLOGICModel(
-            num_users=self._num_users,
-            num_items=self._num_items,
-            ui=ui,
-            learning_rate=self._learning_rate,
-            embed_k=self._factors,
-            l_w=self._l_w,
-            random_seed=self._seed
-        )
+        self._model = RSLOGIC2Model(num_users=self._num_users,
+                                    num_items=self._num_items,
+                                    ui=ui,
+                                    embed_k=self._factors,
+                                    learning_rate=self._learning_rate,
+                                    l_w=self._l_w,
+                                    random_seed=self._seed)
 
     @property
     def name(self):
-        return "RSLOGIC" \
-               + f"_{self.get_base_params_shortcut()}" \
-               + f"_{self.get_params_shortcut()}"
+        return "RSLOGIC2" \
+            + f"_{self.get_base_params_shortcut()}" \
+            + f"_{self.get_params_shortcut()}"
 
     def train(self):
         if self._restore:
@@ -128,7 +140,7 @@ class RSLOGIC(RecMixin, BaseRecommenderModel):
             self._results.append(result_dict)
 
             if it is not None:
-                self.logger.info(f'Epoch {(it + 1)}/{self._epochs} loss {loss/(it + 1):.5f}')
+                self.logger.info(f'Epoch {(it + 1)}/{self._epochs} loss {loss / (it + 1):.5f}')
             else:
                 self.logger.info(f'Finished')
 
