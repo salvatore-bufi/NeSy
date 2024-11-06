@@ -59,6 +59,40 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
 
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
+    def remove_batch_pairs(self, A, B):
+        """
+        Removes all (user, item) pairs from self.ui that are present in the batch (A, B).
+
+        Parameters:
+        - self.ui: Tensor of shape [2, num_interactions]
+        - A: Tensor of shape [batch_size,] containing user indices
+        - B: Tensor of shape [batch_size,] containing item indices
+
+        Returns:
+        - self.ui_filtered: Tensor of shape [2, num_remaining_interactions]
+        """
+        # Ensure self.ui, A, B are long tensors for integer operations
+        A = torch.tensor(A).long()
+        B = torch.tensor(B).long()
+
+        # Determine the maximum user and item indices to create a unique encoding
+        max_user = torch.max(self.ui[0]).item()
+        max_item = torch.max(self.ui[1]).item()
+
+        # Encode (user, item) pairs uniquely
+        encoding_factor = max_item + 1  # Ensures unique encoding
+        code_batch = A * encoding_factor + B  # Shape: [batch_size]
+        code_int = self.ui[0] * encoding_factor + self.ui[1]  # Shape: [num_interactions]
+
+        # Create a mask where self.ui pairs are NOT in the batch pairs
+        mask = ~torch.isin(code_int, code_batch)
+
+        # Apply the mask to filter out unwanted pairs
+        ui_filtered = self.ui[:, mask]
+
+        return ui_filtered
+
+
 
     def interaction_repr(self, user, item):
         ui_vector = torch.cat((user, item), dim=1)

@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import random
 from abc import ABC
+from .nesy_disj import NeuroSymbolicDisjunction
+import torch.nn.functional as F
 
 class RSLOGIC2Model(torch.nn.Module, ABC):
     def __init__(self,
@@ -21,7 +23,6 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
         np.random.seed(random_seed)
         random.seed(random_seed)
 
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.num_users = num_users
         self.num_items = num_items
@@ -29,6 +30,8 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
         self.learning_rate = learning_rate
         self.l_w = l_w
         self.logic_w = 0.05
+
+        self.device = 'cpu'
 
         # Embeddings for users and items
         self.Gu = torch.nn.Embedding(self.num_users, self.embed_k, device=self.device)
@@ -40,6 +43,9 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
         self.ui = torch.tensor(ui, device=self.device, requires_grad=False)
         self.user_history = {int(u): self.ui[:, self.ui[0, :] == u][1, :] for u in self.ui[0, :].unique()}
 
+        self.method = 'softmax'
+        self.disjunction = NeuroSymbolicDisjunction(method=self.method)
+
         # Optimizer
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
@@ -49,43 +55,84 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
     def antecedent(self, x: torch.Tensor) -> torch.Tensor:
         return 1. - x
 
-    def disjunction_nips(self, selector: torch.Tensor, selected: torch.Tensor, epsilon: float = 1e-40) -> torch.Tensor:
-        expr = torch.log(1. - selector * selected + epsilon)
-        log_sum = torch.sum(expr, dim=1)
-        return 1. - (-1.0 / (-1.0 + log_sum))
+    def remove_items(self, u, i):
+        # Convert u and i to lists to loop through
+        u = u.tolist()
+        i = i.tolist()
 
-    def disjunction_godel(self, selected: torch.Tensor) -> torch.Tensor:
-        return torch.max(selected)
+        # Use a dictionary to track items to remove for each user
+        removal_dict = {}
+        for user, item in zip(u, i):
+            if user in removal_dict:
+                removal_dict[user].append(item)
+            else:
+                removal_dict[user] = [item]
 
+        # Create a new dictionary for updated user_history
+        new_user_history = {}
+        for user, items in self.user_history.items():
+            if user in removal_dict:
+                # Convert the list of items to be removed to a tensor for fast filtering
+                removal_tensor = torch.tensor(removal_dict[user])
+                # Keep only items not in the removal list
+                filtered_items = items[~torch.isin(items, removal_tensor)]
+                new_user_history[user] = filtered_items
+            else:
+                # If no items need to be removed, retain the original tensor
+                new_user_history[user] = items
 
+        return new_user_history
 
-    def disjunction(self, selected: torch.Tensor, f = '1') -> torch.Tensor:
-        if f == '1':
-            return self.disjunction_godel(selected)
-        else:
-            return self.disjunction_nips(1.0, selected)
-
-
-
-    def premise_user_history(self, u: int) -> torch.Tensor:
-        user_history = self.user_history[u]
+    def premise_user_history(self, u: int, user_history: dict = None) -> torch.Tensor:
+        if self.user_history == None:
+            user_history = self.user_history[u]
         gu = self.Gu.weight[u]
         gi = self.Gi(user_history)
         rule_antecedent = self.antecedent(self.like_history(gu, gi))
-        # return self.disjunction(selector=1.0, selected=rule_antecedent)
-        # return self.disjunction(rule_antecedent)
-        return self.disjunction(rule_antecedent, f='1')
-    def calculate_batch_premise(self, users: np.array):
-        u_premis_list = [self.premise_user_history(u).unsqueeze(0) for u in users]
+        return self.disjunction.forward(rule_antecedent)
+    def calculate_batch_premise(self, users: np.array, ui = None):
+        if ui == None:
+            u_premis_list = [self.premise_user_history(u).unsqueeze(0) for u in users]
+        else:
+            u_premis_list = [self.premise_user_history(u, ui[u]).unsqueeze(0) for u in users]
         return torch.cat(u_premis_list, dim=0)
 
     def forward_logic(self, inputs, **kwargs):
         users_premises, scores = inputs
-        users_premises = users_premises.unsqueeze(1)
+        users_premises = users_premises
         ui = torch.sigmoid(scores).unsqueeze(1)
-        # xui = self.disjunction(selector=1.0, selected=torch.cat((ui, users_premises), dim=1))
-        xui = self.disjunction(torch.cat((ui, users_premises), dim=1), f='1')
+        xui = self.disjunction.forward(torch.cat((ui, users_premises), dim=1))
         return xui
+
+    def remove_batch_pairs(self, A, B):
+        """
+        Removes all (user, item) pairs from self.ui that are present in the batch (A, B).
+
+        Parameters:
+        - self.ui: Tensor of shape [2, num_interactions]
+        - A: Tensor of shape [batch_size,] containing user indices
+        - B: Tensor of shape [batch_size,] containing item indices
+
+        Returns:
+        - self.ui_filtered: Tensor of shape [2, num_remaining_interactions]
+        """
+        # Ensure self.ui, A, B are long tensors for integer operations
+        A = torch.tensor(A).long()
+        B = torch.tensor(B).long()
+
+        # Determine the maximum user and item indices to create a unique encoding
+        max_item = torch.max(self.ui[1]).item()
+        # Encode (user, item) pairs uniquely
+        encoding_factor = max_item + 1  # Ensures unique encoding
+        code_batch = A * encoding_factor + B  # Shape: [batch_size]
+        code_int = self.ui[0] * encoding_factor + self.ui[1]  # Shape: [num_interactions]
+        # Create a mask where self.ui pairs are NOT in the batch pairs
+        mask = ~torch.isin(code_int, code_batch)
+
+        # Apply the mask to filter out unwanted pairs
+        ui_filtered = self.ui[:, mask]
+
+        return ui_filtered
 
     def forward(self, inputs, **kwargs):
         users, items = inputs
@@ -102,15 +149,21 @@ class RSLOGIC2Model(torch.nn.Module, ABC):
         xu_pos, gamma_u, gamma_i_pos = self.forward(inputs=(user[:, 0], pos[:, 0]))
         xu_neg, _, gamma_i_neg = self.forward(inputs=(user[:, 0], neg[:, 0]))
 
+        loss = 0
+        bpr_loss = -torch.mean(torch.nn.functional.logsigmoid(xu_pos - xu_neg))
+        loss += bpr_loss
 
-        loss = -torch.mean(torch.nn.functional.logsigmoid(xu_pos - xu_neg))
-
-        premise = self.calculate_batch_premise(user[:, 0])
+        user_history = self.remove_items(user[:, 0], pos[:, 0])
+        premise = self.calculate_batch_premise(user[:, 0], user_history)
         logic_score_pos = self.forward_logic(inputs=(premise, xu_pos))
         logic_score_neg = self.forward_logic(inputs=(premise, xu_neg))
-        logic_loss = -torch.mean(torch.nn.functional.logsigmoid(logic_score_pos - logic_score_neg))
+
+        logic_loss = F.binary_cross_entropy(logic_score_pos, torch.ones(user.shape[0])) + F.binary_cross_entropy(logic_score_neg, torch.zeros(user.shape[0]))
+        # logic_loss = -torch.mean(torch.nn.functional.logsigmoid(logic_score_pos - logic_score_neg))
         # print(f"\nBPR LOSS: {loss} \t LOGIC LOSS: {logic_loss}")
-        loss += self.logic_w * logic_loss
+        # loss += self.logic_w * logic_loss
+        # print(f"\n BPR: {bpr_loss} \t LOGIC: {logic_loss} ")
+        loss += self.logic_w * (0.5) * logic_loss
 
         reg_loss = self.l_w * 0.5 * (gamma_u.norm(2).pow(2) +
                                      gamma_i_pos.norm(2).pow(2) +
